@@ -1,0 +1,127 @@
+apiVersion: 1
+
+# Reglas de la demo. Cada modo de caos dispara las suyas:
+#   pagos-errores -> "Pagos: tasa de 5xx alta" y "API: latencia p95 alta"
+#   db-lenta      -> "DB: pool de conexiones saturado", "Kafka: lag del consumer alto" y "API: latencia p95 alta"
+groups:
+  - orgId: 1
+    name: tramites-api
+    folder: Trámites API
+    interval: 10s
+    rules:
+      - uid: pagos-5xx-alta
+        title: "Pagos: tasa de 5xx alta"
+        condition: B
+        noDataState: OK
+        execErrState: Error
+        for: 30s
+        labels:
+          severity: critical
+          service: tramites-api
+        annotations:
+          summary: "Más del 20% de las requests a /api/pagos devuelven 5xx"
+          description: "Revisar los logs de /api/pagos (level=error) y el estado del upstream gateway-pagos."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: victoriametrics
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                sum(rate(http_requests_total{endpoint="/api/pagos",status=~"5.."}[1m]))
+                / sum(rate(http_requests_total{endpoint="/api/pagos"}[1m]))
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.2] }
+
+      - uid: api-p95-alto
+        title: "API: latencia p95 alta"
+        condition: B
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        labels:
+          severity: warning
+          service: tramites-api
+        annotations:
+          summary: "p95 de {{ $labels.endpoint }} por encima de 2 s"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: victoriametrics
+            model:
+              refId: A
+              instant: true
+              expr: >-
+                histogram_quantile(0.95, sum by (le, endpoint) (rate(http_request_duration_seconds_bucket[1m])))
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [2] }
+
+      - uid: db-pool-saturado
+        title: "DB: pool de conexiones saturado"
+        condition: B
+        noDataState: OK
+        execErrState: Error
+        for: 30s
+        labels:
+          severity: critical
+          service: tramites-api
+        annotations:
+          summary: "Más del 80% del pool de DB en uso"
+          description: "Correlacionar con la latencia de /api/expedientes y los logs 'query lenta en DB'."
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: victoriametrics
+            model:
+              refId: A
+              instant: true
+              expr: db_pool_connections_in_use / db_pool_connections_max
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0.8] }
+
+      - uid: kafka-lag-alto
+        title: "Kafka: lag del consumer alto"
+        condition: B
+        noDataState: OK
+        execErrState: Error
+        for: 30s
+        labels:
+          severity: warning
+          service: tramites-api
+        annotations:
+          summary: "El consumer de {{ $labels.topic }} acumula más de 1000 mensajes de lag"
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: victoriametrics
+            model:
+              refId: A
+              instant: true
+              expr: kafka_consumer_lag
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [1000] }

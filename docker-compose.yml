@@ -1,0 +1,107 @@
+name: grafana-mcp-demo
+
+services:
+  # App de demo: genera tráfico, métricas y logs, con modos de caos
+  tramites-api:
+    build: ./app
+    ports:
+      - "8090:8080"
+    environment:
+      SIM_RPS: "8"
+      LOG_PATH: /var/log/app/app.log
+    volumes:
+      - app-logs:/var/log/app
+    restart: unless-stopped
+
+  # Métricas: VictoriaMetrics single node, scrapeando la app directamente
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:${VM_VERSION:-latest}
+    command:
+      - "-promscrape.config=/etc/vm/scrape.yml"
+      - "-retentionPeriod=7d"
+      - "-selfScrapeInterval=15s"
+    ports:
+      - "8428:8428"
+    volumes:
+      - ./config/scrape.yml:/etc/vm/scrape.yml:ro
+      - vm-data:/victoria-metrics-data
+    restart: unless-stopped
+
+  # Logs: Loki single binary con pattern ingester habilitado
+  loki:
+    image: grafana/loki:${LOKI_VERSION:-3.5.0}
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./config/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  # Agente: Alloy levanta el archivo de logs de la app y lo empuja a Loki
+  alloy:
+    image: grafana/alloy:${ALLOY_VERSION:-latest}
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./config/config.alloy:/etc/alloy/config.alloy:ro
+      - app-logs:/var/log/app:ro
+    depends_on: [loki]
+    restart: unless-stopped
+
+  # Mock de Mattermost: recibe los webhooks de Grafana y los muestra como un chat en :8065
+  mattermost-mock:
+    build: ./mattermost-mock
+    ports:
+      - "8065:8065"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-latest}
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [victoriametrics, loki, mattermost-mock]
+    restart: unless-stopped
+
+  # El servidor MCP de Grafana, expuesto por streamable-http en :8000/mcp
+  mcp-grafana:
+    image: grafana/mcp-grafana:${MCP_GRAFANA_VERSION:-latest}
+    command:
+      - "-t"
+      - "streamable-http"
+      - "--address"
+      - "0.0.0.0:8000"
+      - "--allowed-hosts"
+      - "localhost:8000,127.0.0.1:8000,mcp-grafana:8000"
+      # Solo lectura: el modelo puede consultar pero no tocar dashboards/alertas.
+      # Sacá esta línea si querés mostrar que también puede crear dashboards.
+      - "--disable-write"
+    ports:
+      - "8000:8000"
+    environment:
+      GRAFANA_URL: http://grafana:3000
+      # Si definiste GRAFANA_SERVICE_ACCOUNT_TOKEN en .env se usa eso (recomendado);
+      # si no, cae en usuario/contraseña de admin, que alcanza para la demo.
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}
+      GRAFANA_USERNAME: ${GRAFANA_ADMIN_USER:-admin}
+      GRAFANA_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Token que tienen que mandar los clientes MCP (Authorization: Bearer ...)
+      MCP_GRAFANA_SERVER_TOKEN: ${MCP_GRAFANA_SERVER_TOKEN:-demo-token-cambiame}
+    depends_on: [grafana]
+    restart: unless-stopped
+
+volumes:
+  app-logs:
+  vm-data:
+  loki-data:
+  grafana-data:

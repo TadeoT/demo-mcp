@@ -1,0 +1,30 @@
+apiVersion: 1
+
+# Dos destinos para cada alerta:
+#  - mattermost-mock: webhook estilo Slack/Mattermost, se ve como chat en http://localhost:8065
+#  - app-log: la app de demo lo escribe como log, así queda en Loki
+# Para usar un Mattermost real, cambiá la url del receiver "mattermost" por la del webhook entrante.
+contactPoints:
+  - orgId: 1
+    name: demo-webhook
+    receivers:
+      - uid: mattermost
+        type: slack
+        settings:
+          url: http://mattermost-mock:8065/hooks/demo
+          username: Grafana
+          title: '{{ template "default.title" . }}'
+          text: '{{ template "default.message" . }}'
+      - uid: app-log
+        type: webhook
+        settings:
+          url: http://tramites-api:8080/alert-webhook
+          httpMethod: POST
+
+policies:
+  - orgId: 1
+    receiver: demo-webhook
+    group_by: ["alertname"]
+    group_wait: 5s
+    group_interval: 15s
+    repeat_interval: 1h

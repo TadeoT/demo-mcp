@@ -1,0 +1,55 @@
+// Levanta los logs JSON de tramites-api y los manda a Loki
+
+local.file_match "app" {
+  path_targets = [{
+    "__path__"     = "/var/log/app/*.log",
+    "job"          = "tramites-api",
+    "service_name" = "tramites-api",
+    "env"          = "demo",
+  }]
+}
+
+loki.source.file "app" {
+  targets       = local.file_match.app.targets
+  forward_to    = [loki.process.app.receiver]
+  tail_from_end = true
+}
+
+loki.process "app" {
+  stage.json {
+    expressions = {
+      ts       = "ts",
+      level    = "level",
+      endpoint = "endpoint",
+      trace_id = "trace_id",
+    }
+  }
+
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+
+  // level y endpoint como labels (baja cardinalidad)
+  stage.labels {
+    values = {
+      level    = "",
+      endpoint = "",
+    }
+  }
+
+  // trace_id como structured metadata (alta cardinalidad, no va como label)
+  stage.structured_metadata {
+    values = {
+      trace_id = "",
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
