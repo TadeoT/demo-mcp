@@ -9,7 +9,7 @@ Esta guía es para tenerla al lado mientras hablás: en cada acto está **qué d
 - [ ] Stack levantado hace al menos 10 minutos (`docker compose up -d --build`)
 - [ ] `./scripts/check.sh` todo en verde
 - [ ] `./scripts/chaos.sh none`
-- [ ] MCP registrado en Claude Code (`./clients/claude-code.sh`) y `/mcp` muestra `grafana` conectado
+- [ ] MCP registrado en Claude Code (`./clients/claude-code.sh`, alcance local: solo esta carpeta) y `/mcp` muestra `grafana` conectado. Si preguntan por los alcances, ver la sección "Cómo se configura el MCP en Claude Code"
 - [ ] Pestañas abiertas: Grafana en el dashboard "Trámites API - Overview", Mattermost mock (localhost:8065), `docker-compose.yml` en el editor
 - [ ] Una segunda terminal para `chaos.sh`, fuera de la vista del público
 - [ ] Fuente de la terminal grande (que se lea desde el fondo) y notificaciones del sistema apagadas
@@ -35,6 +35,73 @@ Rematá con: "Es el mismo stack que usamos en serio, solo que la app es de menti
 &#91;embedded content: arquitectura de la demo · 7 componentes\]
 
 Claude nunca toca la app ni las bases: todo pasa por el MCP, que solo consulta a Grafana.
+
+## Cómo se configura el MCP en Claude Code (2 min, opcional)
+
+**Idea a transmitir:** conectar Claude a Grafana es un solo comando. Lo único que hay que decidir es **quién ve esa configuración**, y para eso hay tres opciones.
+
+**El comando base:**
+
+```bash
+claude mcp add --transport http grafana http://localhost:8000/mcp \
+  --header "Authorization: Bearer demo-token-cambiame"
+```
+
+- `--transport http`: cómo habla Claude con el servidor (streamable-http).
+- La URL: dónde está `mcp-grafana`.
+- `--header`: el token que el servidor exige. Sin él, devuelve 401.
+- `grafana` es el nombre con el que queda registrado.
+
+**Las tres opciones (se eligen con `--scope`):**
+
+| Opción | Flag | Dónde se guarda | Quién la ve | Cuándo usarla |
+| --- | --- | --- | --- | --- |
+| **Local** (la de por defecto) | `--scope local` | `~/.claude.json`, atada a la carpeta del proyecto | Solo vos, y solo en ese proyecto | Probar sin tocar nada más. Es la que usamos en la demo. |
+| **Project** | `--scope project` | `.mcp.json` en la raíz del repo | Todo el equipo, porque el archivo se commitea | Que cualquiera que clone el repo tenga el MCP listo. |
+| **User** | `--scope user` | `~/.claude.json`, global | Solo vos, pero en todos tus proyectos | Un MCP que usás siempre, por ejemplo contra tu Grafana real. |
+
+No existe una opción "para todos los usuarios de la máquina": la más amplia es la de usuario, que es solo tu cuenta. Si el mismo servidor está definido en más de una, gana la más específica: **local, después project, después user**.
+
+**Ejemplos:**
+
+```bash
+# Local: solo vos, solo en esta carpeta (lo que hace ./clients/claude-code.sh)
+claude mcp add --transport http grafana http://localhost:8000/mcp \
+  --header "Authorization: Bearer demo-token-cambiame"
+
+# Project: queda en .mcp.json y se comparte con el equipo
+claude mcp add --scope project --transport http grafana http://localhost:8000/mcp \
+  --header "Authorization: Bearer \${MCP_GRAFANA_SERVER_TOKEN}"
+
+# User: disponible en todos tus proyectos
+claude mcp add --scope user --transport http grafana http://localhost:8000/mcp \
+  --header "Authorization: Bearer demo-token-cambiame"
+```
+
+Con la opción de proyecto, el archivo `.mcp.json` queda así:
+
+```json
+{
+  "mcpServers": {
+    "grafana": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_GRAFANA_SERVER_TOKEN}" }
+    }
+  }
+}
+```
+
+**Dos cuidados:** en un `.mcp.json` que se commitea, el token va como variable de entorno (`${MCP_GRAFANA_SERVER_TOKEN}`) y no escrito en el archivo. Y la primera vez que alguien abre el proyecto, Claude Code le pide aprobar el servidor antes de usarlo.
+
+**Cómo comprobar que quedó bien:**
+
+- `claude mcp list` muestra los servidores y si están conectados (`✔ Connected`).
+- Dentro de Claude, `/mcp` muestra lo mismo y deja reconectar.
+- Las tools aparecen en una sesión nueva. Si registrás el MCP con Claude ya abierto, reiniciá la sesión.
+- Para sacarlo: `claude mcp remove grafana --scope local` (o `project` / `user`, según dónde lo hayas puesto).
+
+**Otros clientes:** Claude Desktop y VS Code tienen su propia configuración. Los ejemplos están en `clients/claude_desktop_config.json` y `clients/vscode-mcp.json`.
 
 ## Acto 1 — Descubrimiento (3 min)
 
@@ -141,6 +208,7 @@ Cambiá al `docker-compose.yml` y recorré las cuatro capas:
 | Pregunta | Respuesta corta |
 | --- | --- |
 | ¿Funciona con otros modelos, no solo Claude? | Sí. MCP es un estándar: Copilot en VS Code, Cursor y otros clientes se conectan al mismo servidor. En `clients/` hay ejemplos. |
+| ¿Dónde se configura el MCP en Claude Code? | En tres alcances (`--scope`). **Local** (el default): solo vos y solo en ese proyecto, queda en `~/.claude.json`. **Project**: en un `.mcp.json` en la raíz del repo, que se commitea y lo comparte todo el equipo. **User**: solo vos, pero en todos tus proyectos. Si el mismo servidor está en más de uno, gana el más específico (local, después project, después user). En el `.mcp.json` conviene usar una variable de entorno para el token y no commitearlo. |
 | ¿Y si alucina una conclusión? | Por eso importa que muestre las queries: la conclusión se verifica contra los datos. Es un asistente para la guardia, no un piloto automático. |
 | ¿Cuánto cuesta? | Depende del modelo y de cuánto lea. Las investigaciones con muchos logs consumen más tokens, así que conviene filtrar bien en LogQL. |
 | ¿Funciona con nuestro stack real? | VictoriaMetrics funciona porque habla PromQL. En Kubernetes hay un chart oficial de Helm, `grafana/grafana-mcp`. |
