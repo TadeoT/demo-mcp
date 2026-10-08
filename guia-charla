@@ -1,0 +1,163 @@
+# Guía para hablar: Grafana MCP + Claude
+
+Oct 8, 2026 · @Estefanía
+
+## Antes de subir
+
+Esta guía es para tenerla al lado mientras hablás: en cada acto está **qué decir** (en tus palabras, no para leer), **qué escribir** en Claude y **qué señalar** en pantalla. Los prompts son los mismos de `DEMO.md`. Duración total: unos 20 minutos con la apertura y el cierre.
+
+- [ ] Stack levantado hace al menos 10 minutos (`docker compose up -d --build`)
+- [ ] `./scripts/check.sh` todo en verde
+- [ ] `./scripts/chaos.sh none`
+- [ ] MCP registrado en Claude Code (`./clients/claude-code.sh`) y `/mcp` muestra `grafana` conectado
+- [ ] Pestañas abiertas: Grafana en el dashboard "Trámites API - Overview", Mattermost mock (localhost:8065), `docker-compose.yml` en el editor
+- [ ] Una segunda terminal para `chaos.sh`, fuera de la vista del público
+- [ ] Fuente de la terminal grande (que se lea desde el fondo) y notificaciones del sistema apagadas
+- [ ] Una sesión nueva de Claude, sin historial previo
+
+## Apertura (2 min)
+
+**Gancho.** Arrancá con algo que todos vivieron: "Son las 3 de la mañana, suena una alerta, abrís Grafana y tenés que acordarte de la PromQL para la tasa de error por endpoint. ¿Y si pudieras preguntarle en castellano?"
+
+**Qué es MCP, en una frase.** Es un protocolo estándar para que un asistente de IA use herramientas externas. Grafana publica un servidor MCP oficial que le da a Claude tools para leer datasources, dashboards, métricas, logs y alertas.
+
+**Qué vamos a ver.** Acá nadie escribe queries a mano. Claude descubre qué hay, arma la PromQL y la LogQL solo y, cuando algo se rompa, investiga cruzando alertas, métricas y logs.
+
+**El entorno.** Mostrá el diagrama de abajo (o el del README):
+
+- `tramites-api`: una app falsa de trámites (turnos, expedientes, pagos) que genera tráfico sola y tiene un botón de "romper".
+- VictoriaMetrics para métricas y Loki para logs, los dos conectados a Grafana.
+- Las alertas de Grafana van a un Mattermost simulado.
+- `mcp-grafana` en el medio, en solo lectura y con token.
+
+Rematá con: "Es el mismo stack que usamos en serio, solo que la app es de mentira y puedo romperla cuando quiero".
+
+&#91;embedded content: arquitectura de la demo · 7 componentes\]
+
+Claude nunca toca la app ni las bases: todo pasa por el MCP, que solo consulta a Grafana.
+
+## Acto 1 — Descubrimiento (3 min)
+
+**Idea a transmitir:** Claude no conoce este entorno. No le dimos nombres de métricas, labels ni dashboards: los descubre preguntando.
+
+**Transición:** "Le voy a hablar como si fuera alguien nuevo en el equipo que recién entra a Grafana".
+
+| Escribí | Mientras trabaja, señalá | Después, decí |
+| --- | --- | --- |
+| ¿Qué datasources tiene configurados Grafana y de qué tipo son? | La llamada a `list_datasources` | VictoriaMetrics está registrado como tipo Prometheus, así que el MCP le habla en PromQL sin nada especial. |
+| ¿Qué métricas hay disponibles de la app tramites-api? Explicame brevemente qué mide cada una. | `list_prometheus_metric_names` y `..._metadata` | "Nadie le pasó estos nombres: los descubrió". |
+| ¿Qué labels tienen los logs en Loki? | `list_loki_label_names` y `..._values` | Ahora sabe cómo filtrar logs: `level`, `endpoint`, `service_name`. |
+| ¿Qué alertas hay configuradas, qué vigila cada una y a dónde notifican? | `list_alert_rules` y `list_contact_points` | "Hay cuatro alertas, todas tranquilas. Acuérdense de ellas, porque en un rato van a sonar". |
+
+**Cierre del acto:** "En un minuto tiene el mismo mapa mental que le lleva una mañana a alguien nuevo".
+
+## Acto 2 — Preguntas de todos los días (4 min)
+
+**Idea a transmitir:** las preguntas que hoy implican abrir el explorador y escribir PromQL o LogQL de memoria se responden en lenguaje natural. Y lo que responde se puede verificar.
+
+**Transición:** "Ya conoce el terreno. Ahora, las preguntas que nos hacemos todos los días".
+
+| Escribí | Mientras trabaja, señalá | Después, decí |
+| --- | --- | --- |
+| ¿Cuántos requests por segundo está atendiendo tramites-api ahora, desglosado por endpoint? | La query que armó en `query_prometheus` (expandila) | "Esto es PromQL correcto, con `rate` y `sum by`, escrito por el modelo". |
+| ¿Cuál es la latencia p95 y p99 de cada endpoint en la última media hora? | El uso de `histogram_quantile` | Cambiá a la pestaña de Grafana y mostrá que coincide con el panel de latencia. |
+| Mostrame los últimos 10 errores en los logs y agrupalos por tipo. | El filtro LogQL `{service_name="tramites-api", level="error"}` | Encuentra el ruido de fondo (404 y algunos 500 con NullPointer) y lo trata como esporádico, no como incidente. |
+| ¿Qué patrones de log aparecen más seguido? | `query_loki_patterns` | Loki agrupa los logs por estructura, así que resume sin leer línea por línea. |
+| ¿Qué dashboards hay y qué paneles tiene el de tramites-api? Después: dame el link directo al panel de latencia. | `search_dashboards`, `get_dashboard_summary`, `generate_deeplink` | Hacé click en el link en vivo: es real y abre el panel. |
+
+**Cierre del acto:** "Lo importante no es que no tenga que saber PromQL, sino que puedo ver y verificar la query que armó. No es una caja negra".
+
+## Acto 3 — Se rompe algo (7 min)
+
+**Idea a transmitir:** este es el momento fuerte. Claude investiga un incidente como lo haría una persona de guardia: parte de la alerta, confirma con métricas, baja a los logs y llega a una causa raíz. Dejá que se vean las idas y vueltas: ahí se ve el razonamiento.
+
+**Paso 1: romper (sin que lo vean).** En la terminal oculta, `./scripts/chaos.sh pagos-errores`. Mientras tanto, hablá: "Mientras charlamos, algo se va a romper. No les voy a decir qué".
+
+- Relleno para los 40–60 s de espera: contar cómo es hoy una guardia real (abrir dashboards, buscar en logs, preguntar en el canal), o qué tools expone el MCP.
+
+**Paso 2: llega la alerta.** Cuando aparezca "Pagos: tasa de 5xx alta" en Mattermost, cambiá a esa pestaña: "Acá está. Así empieza un incidente real".
+
+> Me acaba de llegar una alerta al canal de Mattermost. ¿Qué alertas están disparadas ahora y qué está pasando en tramites-api?
+
+Señalá en orden, a medida que pasa:
+
+1. Ve que la regla de pagos está en `firing` y lee su descripción.
+2. Sigue la pista de la descripción: "Revisar los logs de /api/pagos y el estado del upstream gateway-pagos".
+3. Confirma con métricas: \~45% de 5xx en `/api/pagos` y latencia disparada.
+4. Baja a Loki y encuentra "timeout contactando gateway de pagos" con `upstream=gateway-pagos:443`.
+5. Concluye que el problema es la dependencia externa, no la app.
+
+**Frase clave:** "Lo que escribimos en la alerta para el humano de guardia también lo usó el modelo. Una buena descripción de alerta es un runbook para los dos".
+
+> ¿Desde qué hora exactamente empezó y cuántos usuarios distintos fueron afectados?
+
+Señalá la query de rango y la LogQL con `| json` y un conteo por `user_id`. Si encuentra el log `alerta firing` en Loki, comentá la diferencia entre cuándo empezó el problema y cuándo avisó la alerta.
+
+**Paso 3: cambia la falla.** En la terminal oculta, `./scripts/chaos.sh db-lenta`. Esperá a que en Mattermost se resuelva la alerta de pagos y entren las de DB y Kafka.
+
+> ¿Sigue el mismo problema o cambió algo?
+
+Lo que debería notar: pagos se recuperó y ahora el problema está en `/api/expedientes`. Hay latencia alta, errores 503, el pool de DB al 90% o más, el lag de Kafka creciendo y logs de "query lenta en DB".
+
+**Frase clave:** "Juntó cinco señales distintas (alertas, latencia, errores, pool, lag) más los logs, y propuso una causa raíz: una query sin índice que satura el pool. Eso a una persona le lleva un buen rato".
+
+**Paso 4: recuperar.** `./scripts/chaos.sh none`, mostrá las resoluciones en Mattermost y, si sobra tiempo:
+
+> ¿Ya está todo normal? ¿Queda alguna alerta disparada?
+
+Cierra el ciclo: alerta, investigación, recuperación.
+
+## Acto 4 — Seguridad y límites (2 min)
+
+**Idea a transmitir:** darle a una IA acceso a la observabilidad es dar acceso a datos sensibles. Los límites se configuran en el servidor MCP, no se le piden al modelo.
+
+> Creame un dashboard nuevo con la tasa de error por endpoint.
+
+Va a decir que no puede. Explicá que no es que se niegue: con `--disable-write`, las tools de escritura ni siquiera existen. Tampoco puede crear, silenciar ni modificar alertas.
+
+Cambiá al `docker-compose.yml` y recorré las cuatro capas:
+
+1. **Solo lectura** (`--disable-write`): el límite lo pone el servidor, no el prompt.
+2. **Token bearer** (`MCP_GRAFANA_SERVER_TOKEN`): sin token, el MCP queda abierto a cualquiera que llegue al puerto.
+3. **`--allowed-hosts`**: corta ataques de DNS rebinding desde el navegador.
+4. **Credenciales mínimas:** en la demo usamos admin; en producción, un service account con rol Viewer o permisos finos por datasource.
+
+**Frase clave sobre datos:** "Todo lo que el modelo lee de los logs entra a su contexto y viaja al proveedor del LLM. Si los logs tienen DNI, CUIT o mails, hay que enmascararlos en Alloy antes de que lleguen a Loki".
+
+**Opcional, si querés mostrar escritura:** sacá `--disable-write`, `docker compose up -d mcp-grafana`, reconectá el cliente y repetí el prompt. Calculá un minuto extra.
+
+## Cierre (1 min) y preguntas
+
+**Tres ideas para llevarse:**
+
+1. **No reemplaza a Grafana, se apoya en Grafana.** Usa los mismos datasources, dashboards y alertas que ya tenés. Para probarlo no hay que migrar nada.
+2. **Es verificable.** Cada respuesta viene con la query que la sostiene, y la podés abrir en Grafana.
+3. **Los límites se configuran en el servidor, no se le piden al modelo.** Solo lectura, token, permisos mínimos y cuidado con los datos personales.
+
+**Remate:** "La próxima vez que suene una alerta a las 3 de la mañana, la primera pregunta se la pueden hacer en castellano".
+
+**Preguntas probables:**
+
+| Pregunta | Respuesta corta |
+| --- | --- |
+| ¿Funciona con otros modelos, no solo Claude? | Sí. MCP es un estándar: Copilot en VS Code, Cursor y otros clientes se conectan al mismo servidor. En `clients/` hay ejemplos. |
+| ¿Y si alucina una conclusión? | Por eso importa que muestre las queries: la conclusión se verifica contra los datos. Es un asistente para la guardia, no un piloto automático. |
+| ¿Cuánto cuesta? | Depende del modelo y de cuánto lea. Las investigaciones con muchos logs consumen más tokens, así que conviene filtrar bien en LogQL. |
+| ¿Funciona con nuestro stack real? | VictoriaMetrics funciona porque habla PromQL. En Kubernetes hay un chart oficial de Helm, `grafana/grafana-mcp`. |
+| ¿Los datos de los logs salen de la red? | Sí, lo que lee el modelo va al proveedor del LLM. Por eso hay que enmascarar en Alloy o usar un modelo con acuerdos de datos adecuados. |
+| ¿Puede actuar solo, por ejemplo reiniciar algo? | Con este MCP no: solo habla con Grafana, y en la demo en solo lectura. Darle acciones es una decisión aparte y con más controles. |
+
+## Plan B si algo falla en vivo
+
+Regla general: no te pelees con la demo en silencio. Contalo en voz alta ("miren, esto pasa en la vida real") y usá el arreglo de la tabla.
+
+| Síntoma | Qué hacer en el momento |
+| --- | --- |
+| Dice que no hay datos | Revisá el rango de tiempo que usó y pedile "usá los últimos 15 minutos". |
+| La alerta no llega a Mattermost | Usá el prompt alternativo: "Me están llegando quejas de que el sistema anda mal. ¿Podés revisar si hay algún problema en tramites-api en los últimos 10 minutos?" |
+| Ve las alertas en `pending` | Todavía no pasó el `for`. Esperá 30 s y preguntá de nuevo. |
+| `query_loki_patterns` vacío | Saltealo: el pattern ingester necesita unos minutos de logs. |
+| 401 en el cliente | El token del cliente no coincide con `MCP_GRAFANA_SERVER_TOKEN`. |
+| 403 en el MCP | Estás entrando por la IP de la LAN y no por `localhost`. |
+| Se queda trabado o tarda mucho | Cortá con Esc y reformulá más acotado (un endpoint, 10 minutos). |
+| Falla todo (red, Docker, cuenta) | Tené grabada una corrida completa del Acto 3 para mostrar como video. |
